@@ -1,0 +1,95 @@
+# Local Open-RMF stack running the LionsBot site (office_new / level L8) with the
+# LionsBot fleet adapter against api.lionsbot.io. No Gazebo, no Keycloak.
+#
+# Everything ROS-facing shares the host network namespace so DDS discovery is a
+# no-op. On Docker Desktop for Mac that is the Linux VM's namespace; ports bound
+# there are still reachable from macOS localhost.
+name: rmf-lionsbot
+
+x-registry: &registry ghcr.io/open-rmf/rmf_deployment_template/rmf-deployment
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+  RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+
+x-adapter: &adapter
+  build:
+    context: .
+    dockerfile: Dockerfile.fleet-adapter
+    additional_contexts:
+      adapter: "${LIONSBOT_ADAPTER_PATH:-../../../fleet_adapter_lionsbot/fleet_adapter}"
+  image: rmf-deployment/fleet-adapter-lionsbot:local
+  network_mode: host
+  ipc: host
+  depends_on: [rmf-core, api-server]
+  volumes:
+    - "${LIONSBOT_ADAPTER_PATH:-../../../fleet_adapter_lionsbot/fleet_adapter}:/site:ro"
+  restart: unless-stopped
+
+services:
+  rmf-core:
+    image: ghcr.io/open-rmf/rmf_deployment_template/rmf-deployment/rmf:latest
+    network_mode: host
+    ipc: host
+    environment: *ros-env
+    volumes:
+      - "${LIONSBOT_ADAPTER_PATH:-../../../fleet_adapter_lionsbot/fleet_adapter}:/site:ro"
+      - ./rmf-core.launch.xml:/launch/rmf-core.launch.xml:ro
+    entrypoint:
+      - /ros_entrypoint.sh
+      - ros2
+      - launch
+      - /launch/rmf-core.launch.xml
+      - "map_yaml_file:=/site/maps/${FOLDER_NAME:-office_new}/rmf_${FOLDER_NAME:-office_new}.building.yaml"
+      - "floor_name:=${FLOOR_NAME:-L8}"
+      - "use_sim_time:=${USE_SIM_TIME:-false}"
+    restart: unless-stopped
+
+  api-server:
+    image: ghcr.io/open-rmf/rmf_deployment_template/rmf-deployment/api-server:latest
+    network_mode: host
+    ipc: host
+    environment: *ros-env
+    depends_on: [rmf-core]
+    restart: unless-stopped
+
+  dashboard:
+    image: ghcr.io/open-rmf/rmf_deployment_template/rmf-deployment/dashboard-no-auth:latest
+    environment:
+      RMF_SERVER_URL: "${RMF_SERVER_URL:-http://localhost:8000}"
+      TRAJECTORY_SERVER_URL: "${TRAJECTORY_SERVER_URL:-ws://localhost:8006}"
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    depends_on: [api-server]
+    restart: unless-stopped
+
+  fleet-adapter-1:
+    <<: *adapter
+    environment:
+      <<: *ros-env
+      LIONSBOT_USER: "${LIONSBOT_USER:?LIONSBOT_USER is required, set it in .env}"
+      LIONSBOT_PASSWORD: "${LIONSBOT_PASSWORD:?LIONSBOT_PASSWORD is required, set it in .env}"
+      FOLDER_NAME: "${FOLDER_NAME:-office_new}"
+      FLEET_CONFIG: "${FLEET_1_CONFIG:-config_r5.yaml}"
+      NAV_GRAPH: "${FLEET_1_NAV_GRAPH:-0.yaml}"
+      SERVER_URI: "${SERVER_URI:-ws://localhost:8000/_internal}"
+      RMF_WEB_ALERTS_URL: "${RMF_WEB_ALERTS_URL:-http://localhost:8000/alerts/request}"
+      RMF_WEB_API_TOKEN: "${RMF_WEB_API_TOKEN:-}"
+      USE_SIM_TIME: "${USE_SIM_TIME:-false}"
+
+  # Second fleet of the heterogeneous example. Start it only when you want it:
+  #   docker compose --profile fleet2 up -d
+  fleet-adapter-2:
+    <<: *adapter
+    profiles: [fleet2]
+    environment:
+      <<: *ros-env
+      LIONSBOT_USER: "${LIONSBOT_USER:?LIONSBOT_USER is required, set it in .env}"
+      LIONSBOT_PASSWORD: "${LIONSBOT_PASSWORD:?LIONSBOT_PASSWORD is required, set it in .env}"
+      FOLDER_NAME: "${FOLDER_NAME:-office_new}"
+      FLEET_CONFIG: "${FLEET_2_CONFIG:-config_r3scp.yaml}"
+      NAV_GRAPH: "${FLEET_2_NAV_GRAPH:-1.yaml}"
+      SERVER_URI: "${SERVER_URI:-ws://localhost:8000/_internal}"
+      RMF_WEB_ALERTS_URL: "${RMF_WEB_ALERTS_URL:-http://localhost:8000/alerts/request}"
+      RMF_WEB_API_TOKEN: "${RMF_WEB_API_TOKEN:-}"
+      USE_SIM_TIME: "${USE_SIM_TIME:-false}"

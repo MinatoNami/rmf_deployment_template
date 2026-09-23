@@ -1,0 +1,35 @@
+# The LionsBot fleet adapter, built on top of this template's `rmf` image.
+#
+# The adapter repo's own docker/Dockerfile starts from ros:jazzy and pulls RMF
+# from apt. This template's images build RMF from source at `main`, so an
+# apt-based adapter would talk to rmf-core with a different set of
+# rmf_internal_msgs / rmf_api_msgs definitions. Sharing the base image keeps the
+# adapter and rmf-core on exactly one RMF build.
+ARG RMF_IMAGE=ghcr.io/open-rmf/rmf_deployment_template/rmf-deployment/rmf:latest
+FROM ${RMF_IMAGE}
+
+SHELL ["/bin/bash", "-c"]
+
+# Only what the adapter adds on top of the rmf image: yaml, numpy and requests
+# are already present, rviz2 and the visualization packages come from /opt/rmf.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-colcon-common-extensions \
+      python3-pip \
+  && python3 -m pip install --break-system-packages --no-cache-dir \
+      "nudged==0.3.1" \
+      websocket-client \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws
+COPY --from=adapter . /ws/src/fleet_adapter
+
+RUN source /opt/rmf/setup.bash \
+  && colcon build --merge-install --install-base /opt/lionsbot --packages-select fleet_adapter \
+  && rm -rf /ws/build /ws/log
+
+RUN sed -i '$isource "/opt/lionsbot/setup.bash"' /ros_entrypoint.sh
+
+COPY start-adapter.sh /start-adapter.sh
+RUN chmod +x /start-adapter.sh
+
+ENTRYPOINT ["/start-adapter.sh"]

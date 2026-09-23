@@ -1,0 +1,35 @@
+<?xml version="1.0" ?>
+<!--
+  Headless RMF core for a site whose world comes from a fleet adapter repo rather
+  than from rmf_demos. Runs entirely out of the template's `rmf` image: no Gazebo,
+  no rviz2, no site-specific packages.
+-->
+<launch>
+  <arg name="map_yaml_file" description="Path to the RMF building map yaml"/>
+  <arg name="floor_name" default="L8" description="Level the visualizers initialise on"/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="bidding_time_window" default="2.0"/>
+
+  <!-- building_map_server publishes on `building_map`; rmf-web's api-server
+       subscribes to `map`, so bridge the two (same remap as the LionsBot repo's
+       own launch file). -->
+  <node pkg="rmf_building_map_tools" exec="building_map_server" name="building_map_server" output="both"
+        args="$(var map_yaml_file) --ros-args -r /building_map:=/map"/>
+
+  <node pkg="rmf_traffic_ros2" exec="rmf_traffic_schedule" name="rmf_traffic_schedule" output="both">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <node pkg="rmf_task_ros2" exec="rmf_task_dispatcher" name="rmf_task_dispatcher" output="both">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+    <param name="bidding_time_window" value="$(var bidding_time_window)"/>
+  </node>
+
+  <!-- Trajectory server on :8006 plus the fleet/navgraph/floorplan visualizers.
+       headless:=true drops rviz2, which has no display on macOS anyway. -->
+  <include file="$(find-pkg-share rmf_visualization)/visualization.launch.xml">
+    <arg name="use_sim_time" value="$(var use_sim_time)"/>
+    <arg name="map_name" value="$(var floor_name)"/>
+    <arg name="headless" value="true"/>
+  </include>
+</launch>

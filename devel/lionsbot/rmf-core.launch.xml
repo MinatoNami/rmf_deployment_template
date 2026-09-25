@@ -25,6 +25,15 @@
     <param name="bidding_time_window" value="$(var bidding_time_window)"/>
   </node>
 
+  <!-- Arbitrates between fleets competing for a lift: fleet adapters publish on
+       `adapter_lift_requests`, the supervisor grants one session at a time and
+       republishes on `lift_requests`, which is what a lift adapter listens to.
+       Without it nothing reaches the lift adapter at all. The production chart
+       runs this as its own pod (charts/rmf-deployment/templates/rmf-core-modules.yaml). -->
+  <node pkg="rmf_fleet_adapter" exec="lift_supervisor" name="rmf_lift_supervisor" output="both">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
   <!-- Trajectory server on :8006 plus the fleet/navgraph/floorplan visualizers.
        headless:=true drops rviz2, which has no display on macOS anyway. -->
   <include file="$(find-pkg-share rmf_visualization)/visualization.launch.xml">

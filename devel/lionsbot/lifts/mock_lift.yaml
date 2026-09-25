@@ -1,0 +1,36 @@
+# Config for the lift adapter running against a simulated lift.
+#
+# `floors` must agree with the RMF side or nothing works: every name here has
+# to be a level in the building map, and every floor a lift waypoint sits on
+# has to be in this list. RMF drops a destination that is not in
+# `available_floors` before the request ever reaches the lift.
+#
+# The RMF lift name is NOT set here -- it comes from LIFT_NAME in .env, and
+# must match the key under `lifts:` in the building map and in the nav graph.
+mock:
+  enabled: true
+  lift_id: mock_lift_1
+
+  floors: [L8, L9]
+  initial_floor: L8
+
+  seconds_per_floor: 4.0
+  door_cycle_seconds: 2.0
+
+  # Fault injection for exercising the adapter's error paths.
+  command_failure_rate: 0.0
+  query_failure_rate: 0.0
+
+  # State is polled at 2 Hz; leave this off unless you want every poll in the
+  # log. Commands and failures are logged either way.
+  log_polls: false
+
+# When you swap in the real lift, set mock.enabled to false (or drop the block)
+# and put whatever LiftAPI needs here instead. Environment variables are
+# expanded by start-lift-adapter.sh (an unset one is an error), so credentials
+# stay out of git:
+#
+# base_url: "http://192.168.123.123/"
+# user: $LIFT_API_USER
+# password: $LIFT_API_PASSWORD
+# lift_guid: "7e32b6f5-f1ac-14ec-1e1e-94c6911c8a3b"

@@ -13,11 +13,12 @@ so a LionsBot adapter cannot be pointed at the demo simulation.
 
 | Service | Image | Network | What it does |
 | --- | --- | --- | --- |
-| `rmf-core` | template `rmf` | host | building map server, traffic schedule, task dispatcher, trajectory server (`:8006`) |
+| `rmf-core` | template `rmf` | host | building map server, traffic schedule, task dispatcher, lift supervisor, trajectory server (`:8006`) |
 | `api-server` | template `api-server` | host | rmf-web REST/websocket API (`:8000`) |
 | `dashboard` | template `dashboard-no-auth` | bridge | web UI, published on `DASHBOARD_PORT` |
 | `fleet-adapter-1` | built here | host | LionsBot adapter for `FLEET_1_CONFIG` |
 | `fleet-adapter-2` | built here | host | second fleet, behind the `fleet2` profile |
+| `lift-adapter-1` | built here | host | lift adapter for `LIFT_1_NAME`, behind the `lift` profile |
 
 Everything ROS-facing runs on the host network namespace, so DDS discovery needs no
 configuration. `rmf-core` runs entirely out of the stock `rmf` image — the site's map
@@ -82,6 +83,12 @@ Open <http://localhost:3001/dashboard>. To add the second fleet:
 
 ```bash
 docker compose --profile fleet2 up -d
+```
+
+To add a lift — simulated by default, so it needs no hardware:
+
+```bash
+docker compose --profile lift up -d --build
 ```
 
 Tear down with `docker compose down`.
@@ -191,6 +198,42 @@ separately you get N maps, N transforms and N single-robot fleets, because
 `map_transform` follows the robot's own map rather than the building. Getting a shared
 map onto a second robot is a touchscreen sync on that robot: the API can only select a
 map a robot already holds (`PUT /robot/{robotId}/map/{mapId}`), not push one to it.
+
+## Lifts
+
+[`lifts/README.md`](lifts/README.md) covers the whole subject: the contract a
+lift adapter has to satisfy, how to configure lift waypoints in the nav graph
+and the building map, how to drive the lift by hand without a robot, and what
+the simulated lift does.
+
+The short version. `rmf-core` runs the lift supervisor, which turns a fleet's
+`adapter_lift_requests` into the `lift_requests` a lift adapter subscribes to.
+`lift-adapter-1` runs [`lift_adapter_template`](https://github.com/MinatoNami/lift_adapter_template/tree/feat/mock-lift)
+against [`lifts/mock_lift.yaml`](lifts/mock_lift.yaml), which by default drives a
+lift that exists only inside the adapter process and logs both halves of every
+exchange:
+
+```
+--> POST /lift/mock_lift_1/command {"floor": "L9"}
+<-- 200 {"accepted": true, "restarted": true, "from_floor": "L8", "to_floor": "L9", "eta_seconds": 8.0}
+```
+
+Set `mock.enabled: false` and fill in `LiftAPI.py` to talk to a real lift; the
+adapter picks between the two implementations and nothing else changes.
+
+The simulated lift, the `--mock` switch and the session-release fix are on the
+`feat/mock-lift` branch of [the fork](https://github.com/MinatoNami/lift_adapter_template/tree/feat/mock-lift), not upstream. Upstream
+`lift_adapter_template` has none of them and exits at startup with `Failed
+initilize lift status`, so point `LIFT_ADAPTER_PATH` at a checkout of that branch.
+
+`bootstrap_site.py --maps` generates every floor, aligns them on the `lift`
+marker and writes the `lifts:` block into both the nav graph and the building
+map (see [`lifts/README.md`](lifts/README.md#the-two-level-office_new-site)).
+Without `--maps` it generates only the robot's current map, and a lift is a
+hand edit on top. The fleet adapter rides lifts on its
+`feat/lift-support-and-map-reconciliation` branch: when the cabin stops on another
+floor it switches the robot's map and hot-localizes it there (see *Multi-level sites
+and lifts* in the adapter README).
 
 ## How coordinates work
 
@@ -347,6 +390,28 @@ reaching it. Check `docker compose logs rmf-core`, and that both services share
 **`401 Unauthorized` from `api.lionsbot.io`** — the credentials in `.env` are wrong or
 still the placeholders. Everything else in the stack is independent of this; the fleet
 still registers with rmf-web, just with no robots.
+
+**Lift adapter exits with `Timed out waiting for /rmf_lift_supervisor`** —
+`rmf-core` was started before the supervisor was added to
+[`rmf-core.launch.xml`](rmf-core.launch.xml). Restart it with
+`docker compose up -d --force-recreate rmf-core`.
+
+**`GET /lifts` returns `[]` but `GET /lifts/<name>/state` works** — rmf-web
+builds its lift list from the building map, not from the state stream. The lift
+is missing from the `lifts:` block of `rmf_<site>.building.yaml`; RMF drives it
+correctly either way, it just has no card in the dashboard.
+
+**A second level opens absurdly zoomed in and its camera buttons do nothing** —
+that level has no fiducials, so it kept a scale of 1.0 and is published in
+pixels while the reference level is in metres. Nothing errors. See
+[`lifts/README.md`](lifts/README.md#cloning-a-level-needs-fiducials-not-just-a-copy).
+
+**Dashboard map goes blank after restarting `rmf-core` or `api-server`** — the
+three.js camera keeps its old position while the scene is rebuilt, so the floor
+plan ends up off screen. The canvas is still there and `/building_map` is fine;
+click the fit-to-view button (the top icon on the map's left rail). This is a
+dashboard quirk, not a broken map — check `/building_map` before chasing it as
+one.
 
 **Port already in use** — `DASHBOARD_PORT` defaults to 3001. The api-server (`8000`) and
 trajectory server (`8006`) ports are fixed by the images and cannot be remapped, because

@@ -12,6 +12,20 @@ x-ros-env: &ros-env
   ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
   RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 
+x-lift-adapter: &lift-adapter
+  build:
+    context: .
+    dockerfile: Dockerfile.lift-adapter
+    additional_contexts:
+      lift-adapter: "${LIFT_ADAPTER_PATH:-../../../lift_adapter_template/lift_adapter_template}"
+  image: rmf-deployment/lift-adapter:local
+  network_mode: host
+  ipc: host
+  depends_on: [rmf-core]
+  volumes:
+    - ./lifts:/lifts:ro
+  restart: unless-stopped
+
 x-adapter: &adapter
   build:
     context: .
@@ -75,6 +89,21 @@ services:
       SERVER_URI: "${SERVER_URI:-ws://localhost:8000/_internal}"
       RMF_WEB_ALERTS_URL: "${RMF_WEB_ALERTS_URL:-http://localhost:8000/alerts/request}"
       RMF_WEB_API_TOKEN: "${RMF_WEB_API_TOKEN:-}"
+      USE_SIM_TIME: "${USE_SIM_TIME:-false}"
+
+  # The lift. rmf-core runs the lift supervisor (see rmf-core.launch.xml), which
+  # is what turns a fleet's `adapter_lift_requests` into the `lift_requests` this
+  # adapter subscribes to. Start it only when the site has a lift:
+  #   docker compose --profile lift up -d --build
+  lift-adapter-1:
+    <<: *lift-adapter
+    profiles: [lift]
+    environment:
+      <<: *ros-env
+      # Must match the key under `lifts:` in the building map and nav graph.
+      LIFT_NAME: "${LIFT_1_NAME:-lift_1}"
+      LIFT_CONFIG: "${LIFT_1_CONFIG:-mock_lift.yaml}"
+      LIFT_MOCK: "${LIFT_1_MOCK:-false}"
       USE_SIM_TIME: "${USE_SIM_TIME:-false}"
 
   # Second fleet of the heterogeneous example. Start it only when you want it:

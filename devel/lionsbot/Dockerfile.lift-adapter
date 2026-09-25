@@ -1,0 +1,29 @@
+# The lift adapter, built on top of this template's `rmf` image.
+#
+# Same reasoning as Dockerfile.fleet-adapter: the adapter exchanges
+# rmf_lift_msgs with rmf-core and the lift supervisor over DDS, so it has to be
+# built against the same rmf_internal_msgs. Sharing the base image guarantees
+# that; an apt-installed RMF underneath would not.
+ARG RMF_IMAGE=ghcr.io/open-rmf/rmf_deployment_template/rmf-deployment/rmf:latest
+FROM ${RMF_IMAGE}
+
+SHELL ["/bin/bash", "-c"]
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3-colcon-common-extensions \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws
+COPY --from=lift-adapter . /ws/src/lift_adapter_template
+
+RUN source /opt/rmf/setup.bash \
+  && colcon build --merge-install --install-base /opt/lift_adapter \
+       --packages-select lift_adapter_template \
+  && rm -rf /ws/build /ws/log
+
+RUN sed -i '$isource "/opt/lift_adapter/setup.bash"' /ros_entrypoint.sh
+
+COPY start-lift-adapter.sh /start-lift-adapter.sh
+RUN chmod +x /start-lift-adapter.sh
+
+ENTRYPOINT ["/start-lift-adapter.sh"]

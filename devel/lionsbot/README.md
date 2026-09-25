@@ -35,9 +35,16 @@ not provide `rmf-core`, the api-server or the dashboard, and it hard-requires an
 - LionsBot cloud credentials and a robot registered on that account
 - `uv` (only for `bootstrap_site.py`, which needs PyYAML)
 
-## Required: patch the adapter for hyphenated robot IDs
+## Which adapter branch to use
 
-**Apply this before the first run.** RMF composes a per-robot ROS topic,
+Check out the adapter's `feat/lift-support-and-map-reconciliation` branch. It
+contains everything this stack relies on: the hyphenated-robot-ID fix below,
+lift rides between floors, and following a robot that was relocalised by hand.
+Its README has a step-by-step quick start for this stack.
+
+### Hyphenated robot IDs (already fixed on that branch)
+
+Older adapter branches need this fix. RMF composes a per-robot ROS topic,
 `rmf/dynamic_event/begin/<fleet>/<robot>`, from the robot name. ROS 2 topic segments
 allow only alphanumerics and underscores, but LionsBot encoding IDs contain hyphens
 (`R3-2200888-SCR`), and the adapter uses the encoding ID as the RMF robot name. The
@@ -156,8 +163,9 @@ is not free-form.
 docker compose up -d --build
 ```
 
-The adapter changes the robot's selected map on startup, so a robot on a different map
-will be switched. Three lines in `docker compose logs -f fleet-adapter-1` say it worked:
+A robot that is already localized on a map listed in the fleet config's `robot_maps`
+keeps that map and starts on the matching level. Only an unlocalized robot is switched
+to the `start` map and hot-localized there. Three lines in `docker compose logs -f fleet-adapter-1` say it worked:
 
 - `Advertised clean zones: [...]` — empty means dispatch is dead, see Troubleshooting
 - `Successfully added robot [...]`
@@ -199,9 +207,65 @@ by construction, not a placeholder. A config with a real rotation and offset (as
 older `config_r3scp.yaml`) means someone aligned the robot's map against a separate
 architectural drawing instead.
 
-Two unit traps: marker `angle` from the REST API is **radians** and is copied straight
-into `localization_starting_point.heading`, while pose feedback over the websocket is
-**degrees** and the adapter converts it.
+One unit trap, and it only bites in one place: marker `angle` from the REST API is
+**radians** and is copied straight into `localization_starting_point.heading`, and
+hot-localize takes radians too (the API docs say so explicitly, and the websocket
+`HotLocalizeCommand` repeats it). Only pose feedback over the `robotpose` websocket is
+**degrees**, which is why the adapter converts that one and nothing else.
+
+## Localization
+
+Hot-localize is a **confirmation, not a teleport**. The LionsCloud guide ("Tier 2
+Feature: Localization") spells the procedure out:
+
+1. Create a localization point on the map with the touchscreen map editor.
+2. Physically push the robot onto it, as accurately as possible.
+3. Only then call `PUT /robot/command/hot-localize/{robotId}` with that point's
+   coordinates.
+
+So a failing hot-localize is usually not a bad heading — it is a robot that is not
+standing where the call says it is, or a target that was never a localization point in
+the first place. `GET /robot/map/{mapId}/markers/locpoint` returns *only* real
+localization points; the generic `/markers` endpoint also returns POIs and dock points,
+and a POI is not a valid target however good its coordinates look.
+
+The call answers `{"success": bool, "percentage": int}`, where percentage is the
+robot's confidence in the match. That makes heading measurable rather than guessable,
+which is what [`sweep_heading.py`](sweep_heading.py) is for:
+
+```bash
+# read-only: what localization points exist on the L9 map?
+python3 sweep_heading.py --robot R3-2200888-SCR --map office_L9 --list
+
+# walk the heading around the circle and score each one
+python3 sweep_heading.py --robot R3-2200888-SCR --map office_L9 \
+    --point lift_waiting --steps 24 --yes
+```
+
+Read the result like this:
+
+| Shape | Means |
+| --- | --- |
+| one clear peak | the heading was wrong; take the argmax |
+| low everywhere | wrong x/y or map, or the robot is not on the point |
+| `400 RobotStateNotRight` | nothing to do with heading; the robot refused the command |
+
+It prints a `localization_starting_point` block ready to paste into the fleet config,
+and re-applies the best heading on the way out so the robot is not left believing
+whatever the last step said. `--yes` is required because every step overwrites the pose
+estimate; `--list` commands nothing. The account is limited to 100 requests per minute,
+so `--delay` is clamped to keep a sweep inside that.
+
+Two things the adapter does not do, worth knowing when reading its logs:
+
+- **It never sends `accuracy`.** The request body accepts one and every marker carries
+  one; `sweep_heading.py` defaults to the point's own value and `--accuracy -1` omits
+  the field, so the difference can be measured.
+- **It sweeps only after a lift ride.** The adapter logs every hot-localize with its
+  percentage or `errorCode` (`hot-localize ... :` lines), and after a lift ride it
+  sweeps the heading itself when the derived one scores low. The startup localize
+  still uses `localization_starting_point` as given, so measure that heading with
+  `sweep_heading.py`.
 
 ## Notes on Apple Silicon
 
@@ -248,8 +312,8 @@ key in `.env` must be `LIONSBOT_USER`. `docker-compose.yaml` uses
 `${LIONSBOT_USER:?...}`, so a key named `LIONSBOT_EMAIL` fails with a message about a
 missing variable.
 
-**Adapter crash-loops with `InvalidTopicNameError`** — the hyphen patch above is not
-applied. Each loop also re-sends a change-map command to the robot, so stop the service
+**Adapter crash-loops with `InvalidTopicNameError`** — the adapter checkout predates the
+hyphen fix; switch to the branch named above. Each loop also re-sends a change-map command to the robot, so stop the service
 while you fix it.
 
 **`Advertised clean zones: []`** — `dock_summary.yaml` is empty for this fleet. The

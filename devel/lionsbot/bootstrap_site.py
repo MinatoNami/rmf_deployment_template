@@ -1177,8 +1177,12 @@ def main() -> None:
                              'docs do not state this, but observed values are '
                              'full-precision floats near pi/2, so radians.')
     parser.add_argument(
-        '--output', default='../../../fleet_adapter_lionsbot/fleet_adapter',
-        help='adapter package directory to write into')
+        '--output',
+        default=str(Path(__file__).resolve().parent
+                    / '../../../fleet_adapter_lionsbot/fleet_adapter'),
+        help='adapter package directory to write into (default: a '
+             'fleet_adapter_lionsbot checkout beside this repo, resolved '
+             'from this script rather than the working directory)')
     args = parser.parse_args()
 
     if not args.user:

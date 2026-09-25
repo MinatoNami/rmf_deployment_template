@@ -31,15 +31,83 @@ not provide `rmf-core`, the api-server or the dashboard, and it hard-requires an
 
 ## Prerequisites
 
-- Docker with Compose v2
-- A local clone of `fleet_adapter_lionsbot` (default: a sibling of this repo)
-- LionsBot cloud credentials and a robot registered on that account
-- `uv` (only for `bootstrap_site.py`, which needs PyYAML)
+- Docker with Compose v2 (Docker Desktop on macOS: turn on host networking, see
+  [Notes on Apple Silicon](#notes-on-apple-silicon))
+- `git`, and Python 3.10+
+- [`uv`](https://docs.astral.sh/uv/) for the helper scripts that need PyYAML or
+  websocket-client (`bootstrap_site.py`, `derive_zone_paths.py`)
+- LionsBot cloud credentials (`api.lionsbot.io`) and a robot registered on that account
+
+## Getting the code
+
+The stack builds two other repos into its images, and by default expects them
+checked out **beside** this one:
+
+```
+Open-rmf/                              any parent directory
+├── rmf_deployment_template/           this repo
+│   └── devel/lionsbot/                you are here; run every command from here
+├── fleet_adapter_lionsbot/            LIONSBOT_ADAPTER_PATH → .../fleet_adapter
+└── lift_adapter_template/             LIFT_ADAPTER_PATH → .../lift_adapter_template
+```
+
+```bash
+git clone -b feat/lionsbot-local-stack https://github.com/MinatoNami/rmf_deployment_template.git
+```
+
+```bash
+git clone -b feat/lift-support-and-map-reconciliation https://github.com/MinatoNami/fleet_adapter_lionsbot.git
+```
+
+```bash
+git clone -b feat/mock-lift https://github.com/MinatoNami/lift_adapter_template.git
+```
+
+The lift adapter is only needed for `--profile lift`. If you put the repos
+somewhere else, set `LIONSBOT_ADAPTER_PATH` and `LIFT_ADAPTER_PATH` in `.env`
+to the directory holding each one's `package.xml`.
+
+Every command below assumes the working directory is `devel/lionsbot`:
+
+```bash
+cd rmf_deployment_template/devel/lionsbot
+```
+
+## Quick start
+
+For a site whose maps and configs already exist in the adapter repo (the
+shipped `office_new` site, for example):
+
+1. `cp .env.example .env`, then set `LIONSBOT_USER` and `LIONSBOT_PASSWORD`.
+2. Check the site selection in `.env` (`FOLDER_NAME`, `FLOOR_NAME`,
+   `FLEET_1_CONFIG`, `FLEET_1_NAV_GRAPH`) names files that exist under
+   `fleet_adapter_lionsbot/fleet_adapter/{configs,maps}/<FOLDER_NAME>/`.
+3. `docker compose up -d --build` (add `--profile lift` for the simulated lift).
+   The first build pulls the template images and takes several minutes.
+4. Open <http://localhost:3001/dashboard> and `docker compose logs -f fleet-adapter-1`.
+   See [step 5](#5-start-and-verify) for what a healthy start looks like.
+
+For a new site, work through [Setting up a new site](#setting-up-a-new-site) first.
+
+## Tools in this directory
+
+| File | Touches the robot? | What it does |
+| --- | --- | --- |
+| [`bootstrap_site.py`](bootstrap_site.py) | read-only | generates a site's fleet config, nav graph, dock summary and building map from the LionsBot API, one or several floors |
+| [`derive_zone_paths.py`](derive_zone_paths.py) | **moves it** (`--yes`) | captures a zone's planned path so a never-cleaned zone gets real geometry; see [`lifts/README.md`](lifts/README.md#how-the-floors-are-tied-together) |
+| [`sweep_heading.py`](sweep_heading.py) | **re-localizes it** (`--yes`) | scores hot-localize across headings to find the right one; see [Localization](#localization) |
+| [`dispatch.py`](dispatch.py) | via RMF | dispatches `go` / `clean` tasks and prints status without the dashboard |
+| [`lifts/`](lifts/) | — | lift adapter config and the [lift guide](lifts/README.md) |
+| `start-adapter.sh`, `start-lift-adapter.sh` | — | container entrypoints; not run by hand |
+
+Every script takes `--help`. The ones that log in read `LIONSBOT_USER` /
+`LIONSBOT_PASSWORD` from the environment and prompt for the password otherwise.
 
 ## Which adapter branch to use
 
-Check out the adapter's `feat/lift-support-and-map-reconciliation` branch. It
-contains everything this stack relies on: the hyphenated-robot-ID fix below,
+Check out the adapter's `feat/lift-support-and-map-reconciliation` branch
+([fork](https://github.com/MinatoNami/fleet_adapter_lionsbot/tree/feat/lift-support-and-map-reconciliation)).
+It contains everything this stack relies on: the hyphenated-robot-ID fix below,
 lift rides between floors, and following a robot that was relocalised by hand.
 Its README has a step-by-step quick start for this stack.
 
@@ -126,29 +194,50 @@ its cleaning configs are not.
 
 ### 3. Generate the site files
 
-```bash
-uv run --with pyyaml devel/lionsbot/bootstrap_site.py --user you@example.com --list-robots
-```
+Find the robot's encoding ID:
 
 ```bash
-uv run --with pyyaml devel/lionsbot/bootstrap_site.py --robot R3-2200888-SCR --site mysite --fleet r3
+uv run --with pyyaml bootstrap_site.py --list-robots
 ```
 
-It prompts for the password, or reads `LIONSBOT_USER` / `LIONSBOT_PASSWORD` from the
-environment, and writes into the adapter repo:
+Then generate the site. For a single floor (the robot's currently selected map):
 
-```
-configs/<site>/config_<fleet>.yaml    fleet + robot config
-maps/<site>/0.yaml                    nav graph
-maps/<site>/dock_summary.yaml         cleaning zone footprints
-maps/<site>/rmf_<site>.building.yaml  floor plan for the dashboard
-maps/<site>/rmf_<site>.png            the robot's occupancy grid
+```bash
+uv run --with pyyaml bootstrap_site.py --robot R3-2200888-SCR --site mysite --fleet r3
 ```
 
-Omit `--scale` so the scale is derived; passing a value silently skips the job report.
-It defaults to the robot's currently selected map — use `--map-name` for another. If
-the RMF level name must differ from the vendor's, pass `--level` and a `robot_maps`
-bridge is written, which the adapter supports natively.
+For several floors joined by a lift, list the vendor maps in order as
+`NAME=LEVEL`; the first is the reference level, and every floor needs a
+`lift` marker (see [`lifts/README.md`](lifts/README.md#the-two-level-office_new-site)):
+
+```bash
+uv run --with pyyaml bootstrap_site.py --robot R3-2200888-SCR --site mysite --fleet r3 \
+  --maps office_new=L8,office_L9=L9
+```
+
+It reads `LIONSBOT_USER` / `LIONSBOT_PASSWORD` from the environment (or `--user`,
+and prompts for the password), and writes into the adapter repo — by default
+`../../../fleet_adapter_lionsbot/fleet_adapter` relative to the script, or
+`--output`:
+
+```
+configs/<site>/config_<fleet>.yaml          fleet + robot config
+maps/<site>/0.yaml                          nav graph (--nav-graph to rename)
+maps/<site>/dock_summary.yaml               cleaning zone footprints
+maps/<site>/rmf_<site>.building.yaml        floor plan for the dashboard
+maps/<site>/rmf_<site>.png                  the robot's occupancy grid
+                                            (rmf_<site>_<level>.png per floor with --maps)
+```
+
+Options worth knowing (`--help` lists them all):
+
+| Option | Use |
+| --- | --- |
+| `--map-level L9` | single-floor mode, but pick the vendor map by its level instead of the current one |
+| `--scale 0.052` or `--scale L8=0.052,L9=0.051` | fix metres-per-pixel; skips job-report derivation for those levels, so omit it whenever a cleaning job exists |
+| `--zone-paths zone_paths.json` | merge paths captured by `derive_zone_paths.py`, for zones never cleaned |
+| `--start-level L8` | floor the robot stands on when the adapter starts (default: the charger's floor) |
+| `--lift-name`, `--lift-marker`, `--landing-marker`, `--lift-dims` | lift naming and cabin size; defaults `lift_1`, `lift`, `lift_waiting`, `1.5x1.5` |
 
 ### 4. Point `.env` at it
 
@@ -156,13 +245,15 @@ The generator prints these four values when it finishes:
 
 ```
 FOLDER_NAME=mysite
-FLOOR_NAME=L8            # must match --level exactly
+FLOOR_NAME=L8            # the first (reference) level
 FLEET_1_CONFIG=config_r3.yaml
 FLEET_1_NAV_GRAPH=0.yaml
 ```
 
 `FOLDER_NAME` also determines the building filename (`rmf_<site>.building.yaml`), so it
-is not free-form.
+is not free-form. If the site has a lift, also check `LIFT_1_NAME` matches
+`--lift-name` and that `floors` in [`lifts/mock_lift.yaml`](lifts/mock_lift.yaml)
+lists every level.
 
 ### 5. Start and verify
 
